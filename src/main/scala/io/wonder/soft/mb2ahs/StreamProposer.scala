@@ -2,18 +2,17 @@ package io.wonder.soft.mb2ahs
 
 import java.util.concurrent.TimeUnit
 
-import akka.actor.{ActorRef, ActorSystem, Props}
+import akka.actor.ActorSystem
 import akka.event.{Logging, LoggingAdapter}
-import akka.http.javadsl.model.ws.Message
 import akka.http.scaladsl.Http
 import akka.http.scaladsl.model.headers.HttpOriginRange
-import akka.http.scaladsl.model.ws.{BinaryMessage, TextMessage}
+import akka.http.scaladsl.model.ws.{BinaryMessage, Message, TextMessage}
 import akka.http.scaladsl.server.Directives._
 import akka.stream.scaladsl.{Flow, Sink, Source}
-import akka.stream.{ActorMaterializer, Materializer}
+import akka.stream._
 import akka.util.Timeout
 import ch.megard.akka.http.cors.scaladsl.settings.CorsSettings
-import io.wonder.soft.mb2ahs.actor.{BinLogSubscriber, MySQLBinLogEventListenActor}
+import io.wonder.soft.mb2ahs.actor._
 
 import scala.concurrent.ExecutionContextExecutor
 
@@ -24,13 +23,16 @@ trait StreamProposer {
   implicit val executor: ExecutionContextExecutor
   implicit val materializer: Materializer
 
-  val binLogActor: ActorRef
-  val subscriber: ActorRef
-
   implicit val timeout = Timeout(5000, TimeUnit.MILLISECONDS)
 
   def logger: LoggingAdapter
 
+  val sourceGraph: Graph[SourceShape[MyEvent], String] = new BinLogSourceStage
+  val flowGraph: Graph[FlowShape[MyEvent, MyEvent], String] = new BinLogFlowStage
+  val sinkGraph: Graph[SinkShape[MyEvent], String] = new BinLogSinkStage
+  val sinkEvent = Sink.foreach[MyEvent](me => me.value.toString)
+
+  Source.fromGraph[MyEvent, String](sourceGraph)
   val greeterWebSocketService =
     Flow[Message]
       .mapConcat {
@@ -39,7 +41,9 @@ trait StreamProposer {
         // this means we might start sending the response even before the
         // end of the incoming message has been received
         case tm: TextMessage =>
-          TextMessage(Source.single("Hello ") ++ tm.textStream) :: Nil
+          //val result = Source.fromGraph(sourceGraph).via(flowGraph).to(sinkGraph).run()
+          val result = Source.fromGraph(sourceGraph).to(sinkEvent).run()
+          TextMessage(Source.single(result.toString) ++ tm.textStream) :: Nil
 
         case bm: BinaryMessage =>
           // ignore binary messages but drain content to avoid the stream being clogged
@@ -59,13 +63,11 @@ trait StreamProposer {
 
     } ~ path("v1" / "streams") {
       put {
-        binLogActor ! 'init
         complete("ok")
       }
 
     } ~ path("socket.io") {
       (get | options) {
-        println("enter")
         handleWebSocketMessages(greeterWebSocketService)
       }
     }
@@ -79,8 +81,6 @@ object StreamProposer extends App with StreamProposer {
   override implicit val materializer: Materializer = ActorMaterializer()
 
   override val logger = Logging(system, getClass)
-  override val binLogActor: ActorRef = system.actorOf(Props(classOf[MySQLBinLogEventListenActor]), "binlog-actor")
-  override val subscriber: ActorRef = system.actorOf(Props[BinLogSubscriber], name = "subscriber")
 
   Http().bindAndHandle(routes, "0.0.0.0", 8082)
 }
