@@ -5,11 +5,20 @@ import akka.stream.stage._
 import com.github.shyiko.mysql.binlog.BinaryLogClient
 import com.github.shyiko.mysql.binlog.BinaryLogClient.EventListener
 import com.github.shyiko.mysql.binlog.event.{Event => BinLogEvent}
+import com.typesafe.config.{Config, ConfigFactory}
 
 case class MyEvent(value: BinLogEvent)
 
 class BinLogSourceStage extends GraphStageWithMaterializedValue[SourceShape[MyEvent], String] {
-  var client = new BinaryLogClient("0.0.0.0", 3306, "root", "password")
+  val config: Config = ConfigFactory.load()
+  val dbDefault = config.getConfig("db.default")
+
+  val dbHost = dbDefault.getString("host")
+  val dbUser = dbDefault.getString("user")
+  val dbPassword = dbDefault.getString("password")
+  val dbPort = dbDefault.getInt("port")
+
+  var client = new BinaryLogClient(dbHost, dbPort, dbUser, dbPassword)
 
   val out: Outlet[MyEvent] = Outlet("out")
   val shape: SourceShape[MyEvent] = SourceShape(out)
